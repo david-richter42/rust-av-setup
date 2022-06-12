@@ -228,7 +228,7 @@ impl CameraController {
     }
 
     fn update_camera(&self, camera: &mut Camera) {
-        use cgmath::InnerSpace;
+        // use cgmath::InnerSpace;
         let forward = camera.target - camera.eye;
         let forward_norm = forward.normalize();
         let forward_mag = forward.magnitude();
@@ -278,6 +278,7 @@ struct State {
     camera_bind_group: wgpu::BindGroup,
     instances: Vec<Instance>,
     instance_buffer: wgpu::Buffer,
+    depth_texture: texture::Texture,
 }
 
 impl State {
@@ -346,7 +347,6 @@ impl State {
                 usage: wgpu::BufferUsages::VERTEX,
             }
         );
-
 
         // Image loading
         let diffuse_bytes = include_bytes!("wood_floor.jpg");
@@ -462,16 +462,15 @@ impl State {
             source: wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
         });
 
+        // Depth
+        let depth_texture = texture::Texture::create_depth_texture(&device, &config, "depth_texture");
+
         let render_pipeline_layout = device.create_pipeline_layout(
             &wgpu::PipelineLayoutDescriptor {
                 label: Some("Render Pipeline Layout"),
-                bind_group_layouts: &[
-                    &texture_bind_group_layout,
-                    &camera_bind_group_layout,
-                ],
+                bind_group_layouts: &[&texture_bind_group_layout, &camera_bind_group_layout],
                 push_constant_ranges: &[],
-            }
-        );
+            });
         
 
         let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -503,7 +502,13 @@ impl State {
                 // Requires Features::CONSERVATIVE_RASTERIZATION
                 conservative: false,
             },
-            depth_stencil: None, // Will change later
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: texture::Texture::DEPTH_FORMAT,
+                depth_write_enabled: true,
+                depth_compare: wgpu::CompareFunction::Less,
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
             multisample: wgpu::MultisampleState {
                 count: 1, // num_samples used by pipeline
                 mask: !0, // which samples should be active
@@ -544,20 +549,7 @@ impl State {
             }
         );
 
-        let num_indices = INDICES.len() as u32;
-
-        let render_pipeline_layout = device.create_pipeline_layout(
-            &wgpu::PipelineLayoutDescriptor {
-                label: Some("Render Pipeline Layout"),
-                bind_group_layouts: &[
-                    &texture_bind_group_layout,
-                    &camera_bind_group_layout,
-                ],
-                push_constant_ranges: &[],
-            }
-        );
-        
-            
+        let num_indices = INDICES.len() as u32;  
 
         // return
         Self {
@@ -578,6 +570,7 @@ impl State {
             camera_controller,
             instances,
             instance_buffer,
+            depth_texture,
         }
     }
 
@@ -587,6 +580,7 @@ impl State {
             self.config.width = new_size.width;
             self.config.height = new_size.height;
             self.surface.configure(&self.device, &self.config);
+            self.depth_texture = texture::Texture::create_depth_texture(&self.device, &self.config, "depth_texture");
 
             self.camera.aspect = self.config.width as f32 / self.config.height as f32;
         }
@@ -641,7 +635,14 @@ impl State {
                         }
                     }
                 ],
-                depth_stencil_attachment: None,
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.depth_texture.view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: true,
+                    }),
+                    stencil_ops: None,
+                }),
             });
         
             render_pass.set_pipeline(&self.render_pipeline);
